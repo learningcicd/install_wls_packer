@@ -4,62 +4,22 @@
 ### Create azurevm.pkr.hcl 
  
  ``` bash
-data "azure-keyvaultsecret" "client_id" {
-  vault_name  = "packer-kyv"
-  secret_name = "clientid"
-
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  subscription_id = var.subscription_id
-  tenant_id       = var.tenant_id
-}
-
-data "azure-keyvaultsecret" "client_secret" {
-  vault_name  = "packer-kyv"
-  secret_name = "clientsecret"
-
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  subscription_id = var.subscription_id
-  tenant_id       = var.tenant_id
-}
-
-data "azure-keyvaultsecret" "subscription_id" {
-  vault_name  = "packer-kyv"
-  secret_name = "subscriptionid"
-
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  subscription_id = var.subscription_id
-  tenant_id       = var.tenant_id
-}
-
-data "azure-keyvaultsecret" "tenant_id" {
-  vault_name  = "packer-kyv"
-  secret_name = "tenantid"
-
-  client_id       = var.client_id
-  client_secret   = var.client_secret
-  subscription_id = var.subscription_id
-  tenant_id       = var.tenant_id
-}
-
 source azure-arm vm {
-  client_id       = data.azure-keyvaultsecret.client_id.value     # var.client_id
-  client_secret   = data.azure-keyvaultsecret.client_secret.value # var.client_secret
-  subscription_id = var.subscription_id                           # data.azure-keyvaultsecret.subscription_id.value # var.subscription_id
-  tenant_id       = data.azure-keyvaultsecret.tenant_id.value     # var.tenant_id
+  client_id       = var.client_id
+  client_secret   = var.client_secret
+  subscription_id = var.subscription_id
+  tenant_id       = var.tenant_id
 
   location                          = var.location
   managed_image_name                = "${var.image_name}-${var.image_version}"
   managed_image_resource_group_name = var.gallery_resource_group
 
-  # virtual_network_name                = "vnet-eastus"
-  # virtual_network_subnet_name         = "sbnet-name"
-  # virtual_network_resource_group_name = "weblogic-rg"
+  #virtual_network_name                = "vnet-eastus"
+  #virtual_network_subnet_name         = "snet-eastus-1"
+  #virtual_network_resource_group_name = "weblogic-rg"
 
   os_disk_size_gb      = 250 # in GB
-  disk_additional_size = [32, 100]
+  disk_additional_size = [32, 100, 100]
 
   shared_image_gallery_destination {
     subscription   = var.subscription_id
@@ -82,7 +42,9 @@ source azure-arm vm {
 
   vm_size = "Standard_D2as_v6"
 
+
 }
+
 ```
 ### Craete build.pkr.hcl
 
@@ -96,31 +58,27 @@ build {
   sources = [
     "source.azure-arm.vm"
   ]
-
-  # source "TempPublicIPAddressName" {
-  #   name = "vm-pb-name"
-  # }
-   
+  
   provisioner "file" {
     source      = "../recepies/.env"
     destination = "/tmp/.env"
   }
-
+  
   provisioner "file" {
     source      = "../certs/ca_bundle.crt"
     destination = "/tmp/ca_bundle.crt"
   }
-
+  
   provisioner "file" {
     source      = "../certs/certificate.crt"
     destination = "/tmp/certificate.crt"
   }
-
+  
   provisioner "file" {
     source      = "../certs/private.key"
     destination = "/tmp/private.key"
   }
-
+  
   provisioner "shell" {
     execute_command = local.as_root
     environment_vars = [
@@ -131,9 +89,10 @@ build {
       "../recepies/configure_ownership.sh",
       "../recepies/create-folder.sh",
       "../recepies/download_packages.sh",
+      "../recepies/fs_mount.sh",
     ]
   }
-
+  
   provisioner "shell" {
     execute_command = local.as_oracle
     environment_vars = [
@@ -144,37 +103,52 @@ build {
       "../recepies/domain-create.sh",
     ]
   }
-
-  provisioner "shell" {
-    execute_command = local.as_root
-    scripts = [
-      "../recepies/enable-wls-startup.sh",
-    ]
-  }
-
+  
+  # Create Dynamic Cluster (OFFLINE mode - no Admin Server needed)
   provisioner "shell" {
     execute_command = local.as_oracle
     environment_vars = [
       "CREDENTIAL_ENV=/tmp/.env",
     ]
     scripts = [
-      "../recepies/enable-console.sh",
-      "../recepies/deploy-rconsole.sh",
-      "../recepies/configure-ssl.sh"
+      "../recepies/create-dynamic-cluster.sh",
     ]
   }
-
+  
   provisioner "shell" {
     execute_command = local.as_root
-    inline          = ["rm -f /tmp/.env /tmp/ca_bundle.crt /tmp/certificate.crt /tmp/private.key && sync"]
+    scripts = [
+      "../recepies/enable-wls-startup.sh",
+    ]
   }
-
+  
+  provisioner "shell" {
+    execute_command = local.as_oracle
+    environment_vars = [
+      "CREDENTIAL_ENV=/tmp/.env",
+    ]
+    scripts = [
+      "../recepies/upload_domain.sh",
+    ]
+  }
+  
   provisioner "shell" {
     execute_command = local.as_root
-    inline          = ["/usr/sbin/waagent -force -deprovision+user && export HISTSIZE=0 && sync"]
-    only            = ["azure-arm"]
+    inline = [
+      "rm -f /tmp/.env /tmp/ca_bundle.crt /tmp/certificate.crt /tmp/private.key /tmp/create_dynamic_cluster.py",
+      "sync"
+    ]
+  }
+  
+  provisioner "shell" {
+    execute_command = local.as_root
+    inline = [
+      "/usr/sbin/waagent -force -deprovision+user && export HISTSIZE=0 && sync"
+    ]
+    only = ["azure-arm"]
   }
 }
+
 ```
 
 ### Create plugins.pkr.hcl
@@ -195,39 +169,39 @@ packer {
 ``` bash
 variable subscription_id {
   type = string
-  default = "57ef7ae3-b8b7-45be-ad27-6c8efc024f85"
+  default = ""
 }
 variable tenant_id {
   type = string
-  default = "1dd2843e-7a1f-43ae-a864-0c8c0100f94d"
+  default = ""
 }
 variable client_id {
   type = string
-  default = "23dd37a3-91b7-4fc5-9ff0-b0d53c5176be"
+  default = ""
 }
 variable client_secret {
   type = string
-  default = "JxA8Q~I2ahd2stVwpKWY6g45r-zLaq9xwW-nUdBS"
+  default = ""
 }
-
 variable location {
   type = string
   default = "East US"
 }
 variable image_name {
   type = string
-  default = "pack-img"
+  default = "weblogic-golden"
 }
 variable image_version {
   type = string
-  default = "1.0.1"
+  default = "1.12.0"
 }
 variable gallery_resource_group {
   type = string
-  default = "packer-rg"
+  default = "wls_vm_packer_pg"
 }
 variable gallery_name {
   type = string
-  default = "gallerypck"
+  default = "gallery_packer_wls"
 }
 ```
+
